@@ -34,23 +34,6 @@ function getConfig() {
       "Start with stereo, 44.1kHz, 24-bit audio"
     )
     .check((argv) => {
-      // Validate channels
-      // if (argv.channels < 1 || argv.channels > 8) {
-      //   throw new Error("Channels must be a number between 1 and 8.");
-      // }
-
-      // // Validate sample rate
-      // if (argv["sample-rate"] < 8000 || argv["sample-rate"] > 192000) {
-      //   throw new Error(
-      //     "Sample rate must be a number between 8000 and 192000 Hz."
-      //   );
-      // }
-
-      // // Validate bit depth
-      // if (![16, 24, 32].includes(argv["bit-depth"])) {
-      //   throw new Error("Bit depth must be 16, 24, or 32.");
-      // }
-
       // Validate port
       if (argv.port < 1 || argv.port > 65535) {
         throw new Error("Port must be a number between 1 and 65535.");
@@ -60,13 +43,7 @@ function getConfig() {
     })
     .parseSync();
 
-  return {
-    channels: argv.channels,
-    sampleRate: argv["sample-rate"],
-    bitDepth: argv["bit-depth"] as 16 | 24 | 32,
-    port: argv.port,
-    debug: argv.debug,
-  };
+  return argv;
 }
 
 const config = getConfig();
@@ -84,5 +61,5 @@ const wss = new WebSocketServer({ port: PORT }, () =>
 
 wss.on("connection", (ws, req) => {
   const path = new URL(req.url ?? "/", `http://${req.headers.host}`).pathname;
-  audioRelayServer.handleConnection(ws, path);
+  audioRelayServer.connect(ws, path);
 });

@@ -19,7 +19,7 @@ export class AudioRelayServer {
     this.logger.log("[audio-relay] Server initialized");
   }
 
-  handleConnection(ws: WebSocket, path: string): void {
+  connect(ws: WebSocket, path: string): void {
     if (path === "/play") {
       this.handlePlayConnection(ws);
     } else if (path === "/rec") {
