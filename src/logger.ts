@@ -47,7 +47,7 @@ export class Logger extends console.Console {
 
 let logger: Logger | undefined;
 
-export function configureLogger(config: LoggerConfig): Logger {
+export function initializeLogger(config: LoggerConfig): Logger {
   logger = new Logger(config);
   return logger;
 }

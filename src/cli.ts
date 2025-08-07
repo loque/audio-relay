@@ -2,9 +2,8 @@ import { WebSocketServer } from "ws";
 import { AudioRelayServer } from "./audio-relay-server";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
-import { configureLogger, Logger } from "./logger";
+import { initializeLogger } from "./logger";
 import { createAudioRecorder } from "./audio-recorder";
-import { createAudioPlayer } from "./audio-player";
 
 const EXE = "audio-relay";
 
@@ -73,8 +72,7 @@ function getConfig() {
 const config = getConfig();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : config.port;
 const DEBUG = process.env.DEBUG === "true" || config.debug;
-
-const logger = configureLogger({ level: DEBUG ? "debug" : "info" });
+const logger = initializeLogger({ level: DEBUG ? "debug" : "info" });
 
 const audioRelayServer = new AudioRelayServer({
   createAudioRecorder,
