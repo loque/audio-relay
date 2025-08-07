@@ -1,8 +1,4 @@
-import {
-  spawn,
-  type ChildProcess,
-  type ChildProcessWithoutNullStreams,
-} from "child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import { Writable } from "stream";
 import {
   validateAudioConfig,
@@ -11,12 +7,6 @@ import {
 } from "./config";
 import EventEmitter, { once } from "events";
 import { getLogger } from "./logger";
-
-interface IAudioPlayer {
-  start(): void;
-  stop(): void;
-  getStream(): Writable;
-}
 
 /**
  * Calculates how many milliseconds a given PCM byte length will occupy when
@@ -37,7 +27,6 @@ function bytesToMs(
 
 type AudioPlayerOptions = {
   logger?: typeof console;
-  pollIntervalMs?: number; // How often to check if aplay is drained
 };
 
 export class AudioPlayer extends EventEmitter {
@@ -49,10 +38,7 @@ export class AudioPlayer extends EventEmitter {
   protected readonly logger: typeof console;
   protected state: "pending" | "active" | "closing" | "closed" = "pending";
 
-  constructor(
-    input: AudioConfigInput,
-    { logger, pollIntervalMs }: AudioPlayerOptions = {}
-  ) {
+  constructor(input: AudioConfigInput, { logger }: AudioPlayerOptions = {}) {
     super();
     this.logger = logger || getLogger();
     const { channels, sampleRate, bitDepth, format, device } =
@@ -133,10 +119,7 @@ export class AudioPlayer extends EventEmitter {
       },
     });
 
-    this.interval = setInterval(
-      () => this.pollDrained(),
-      pollIntervalMs || 200
-    );
+    this.interval = setInterval(() => this.pollDrained(), 200);
 
     this.state = "active";
   }
@@ -206,151 +189,3 @@ export class AudioPlayer extends EventEmitter {
     this.emit("close");
   }
 }
-
-export function createAudioPlayer(
-  input: AudioConfigInput,
-  logger: typeof console
-): IAudioPlayer {
-  const { channels, sampleRate, format, device } = validateAudioConfig(input);
-
-  let aplay: ChildProcess | null = null;
-  let stream: Writable | null = null;
-  let state: "pending" | "active" | "closing" | "closed" = "pending";
-
-  const start = (): void => {
-    if (state !== "pending") {
-      logger.warn("Playback already started");
-      return;
-    }
-
-    // prettier-ignore
-    const args = [
-      "-t", "raw",
-      "-c", channels.toString(),
-      "-r", sampleRate.toString(),
-      "-f", format,
-      "-D", device,
-    ];
-
-    logger.log("Starting aplay with args:", args);
-    aplay = spawn("aplay", args, { stdio: ["pipe", "ignore", "inherit"] });
-
-    aplay.on("exit", (code, signal) => {
-      logger.log(`aplay process exited with code ${code}, signal ${signal}`);
-      aplay = null;
-      stream = null;
-      state = "closed";
-    });
-
-    aplay.on("error", (error) => {
-      logger.error("aplay process error:", error);
-      if (stream) {
-        stream.emit("error", error);
-      }
-    });
-
-    aplay.stderr?.on("data", (data: Buffer) => {
-      logger.log("aplay stderr:", data.toString());
-    });
-
-    // Create writable stream that pipes to aplay stdin
-    stream = new Writable({
-      write(chunk: Buffer, encoding, callback) {
-        if (state === "closing" || state === "closed") {
-          // Silently ignore writes during shutdown
-          callback();
-          return;
-        }
-
-        if (!aplay?.stdin) {
-          callback(new Error("Audio process not available"));
-          return;
-        }
-
-        if (aplay.stdin.destroyed) {
-          // Already destroyed so nothing else to do
-          callback();
-          return;
-        }
-
-        try {
-          const success = aplay.stdin.write(chunk);
-          if (success) {
-            callback();
-          } else {
-            // Handle backpressure
-            aplay.stdin.once("drain", callback);
-          }
-        } catch (error) {
-          callback(error as Error);
-        }
-      },
-
-      final(callback) {
-        if (aplay?.stdin && !aplay.stdin.destroyed) {
-          aplay.stdin.end();
-        }
-        callback();
-      },
-    });
-
-    // Handle stdin errors
-    if (aplay.stdin) {
-      aplay.stdin.on("error", (error) => {
-        logger.error("aplay stdin error:", error);
-        stream?.emit("error", error);
-      });
-    }
-
-    state = "active";
-  };
-
-  const stop = (): void => {
-    if (state !== "active") {
-      logger.warn("No playback process to stop");
-      return;
-    }
-
-    logger.log("Stopping audio playback");
-
-    state = "closing";
-
-    // Close stdin first to allow aplay to finish playing buffered audio
-    if (aplay?.stdin && !aplay.stdin.destroyed) {
-      aplay.stdin.end();
-    }
-
-    // Give aplay a moment to finish, then terminate if needed
-    setTimeout(() => {
-      if (aplay && !aplay.killed) {
-        aplay.kill("SIGTERM");
-        aplay = null;
-        stream?.emit("close");
-        stream = null;
-        state = "closed";
-      }
-    }, 100);
-  };
-
-  const getStream = (): Writable => {
-    if (state === "pending") {
-      start();
-    }
-
-    if (!stream) {
-      throw new Error(
-        "Audio stream not available. Make sure playback is started."
-      );
-    }
-
-    return stream;
-  };
-
-  return {
-    start,
-    stop,
-    getStream,
-  };
-}
-
-export type AudioPlayerFactory = typeof createAudioPlayer;
