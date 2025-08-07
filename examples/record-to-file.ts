@@ -7,7 +7,7 @@ import { resolve } from "path";
 const recorder = createAudioRecorder({
   rate: 16000,
   channels: 1,
-  bitwidth: 16,
+  bitDepth: 16,
   endian: "little",
   encoding: "signed-integer",
   device: "default",

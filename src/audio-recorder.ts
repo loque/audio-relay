@@ -1,150 +1,98 @@
 import { spawn, ChildProcess } from "child_process";
 import { Readable } from "stream";
-
-export interface AudioRecorderOptions {
-  /** Audio sample rate in Hz */
-  rate?: number;
-  /** Number of audio channels */
-  channels?: number;
-  /** Bit width for audio samples */
-  bitwidth?: 16 | 24 | 32;
-  /** Sample format endianness */
-  endian?: "little" | "big";
-  /** Sample encoding format */
-  encoding?: "signed-integer" | "unsigned-integer";
-  /** ALSA device to record from */
-  device?: string;
-  /** Enable debug logging */
-  debug?: boolean;
-}
+import { validateAudioConfig, type AudioConfigInput } from "./config";
 
 export interface AudioRecorder {
-  /** Start audio recording */
-  startRecording(): void;
-  /** Stop audio recording */
-  stopRecording(): void;
-  /** Get the readable audio stream */
-  getAudioStream(): Readable;
+  start(): void;
+  stop(): void;
+  getStream(): Readable;
 }
 
-export function createAudioRecorder(
-  options: AudioRecorderOptions = {}
-): AudioRecorder {
-  const config = {
-    rate: options.rate || 16000,
-    channels: options.channels || 1,
-    bitwidth: options.bitwidth || 16,
-    endian: options.endian || "little",
-    encoding: options.encoding || "signed-integer",
-    device: options.device || "default",
-    debug: options.debug || false,
-  };
+export function createAudioRecorder(input: AudioConfigInput): AudioRecorder {
+  const { channels, sampleRate, format, device, logger } =
+    validateAudioConfig(input);
 
-  let audioProcess: ChildProcess | null = null;
-  const audioStream = new Readable({
-    read() {
-      // No-op: data is pushed from arecord process
-    },
+  let arecord: ChildProcess | null = null;
+  const stream = new Readable({
+    // No-op: data is pushed from arecord process
+    read() {},
   });
 
-  const formatArecordParams = (): string[] => {
-    // Build format string for arecord
-    const formatEndian = config.endian === "big" ? "BE" : "LE";
-    const formatEncoding = config.encoding === "unsigned-integer" ? "U" : "S";
-    const format = `${formatEncoding}${config.bitwidth}_${formatEndian}`;
+  const start = (): void => {
+    if (arecord !== null) {
+      logger.warn("Recording already started");
+      return;
+    }
 
-    return [
+    // arecord command arguments
+    const args = [
       "-t",
-      "raw", // Output raw audio data
+      "raw",
       "-c",
-      config.channels.toString(),
+      channels.toString(),
       "-r",
-      config.rate.toString(),
+      sampleRate.toString(),
       "-f",
       format,
       "-D",
-      config.device,
+      device,
     ];
+
+    logger.log("Starting arecord with args:", args);
+
+    arecord = spawn("arecord", args, {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    arecord.on("exit", (code, signal) => {
+      logger.debug(
+        `arecord process exited with code ${code}, signal ${signal}`
+      );
+      arecord = null;
+      stream.push(null); // End the stream
+    });
+
+    arecord.on("error", (error) => {
+      logger.debug("arecord process error:", error);
+      stream.emit("error", error);
+    });
+
+    if (arecord.stdout) {
+      arecord.stdout.on("data", (chunk: Buffer) => {
+        stream.push(chunk);
+      });
+
+      arecord.stdout.on("error", (error) => {
+        logger.debug("arecord stdout error:", error);
+        stream.emit("error", error);
+      });
+    }
+
+    arecord.stderr?.on("data", (data: Buffer) => {
+      logger.debug("arecord stderr:", data.toString());
+    });
   };
 
-  const startRecording = (): void => {
-    if (audioProcess !== null) {
-      if (config.debug) {
-        console.warn("Recording already started");
-      }
+  const stop = (): void => {
+    if (arecord === null) {
+      logger.debug("No recording process to stop");
       return;
     }
 
-    const args = formatArecordParams();
-
-    if (config.debug) {
-      console.log("Starting arecord with args:", args);
-    }
-
-    audioProcess = spawn("arecord", args, {
-      stdio: ["ignore", "pipe", config.debug ? "pipe" : "ignore"],
-    });
-
-    audioProcess.on("exit", (code, signal) => {
-      if (config.debug) {
-        console.log(
-          `arecord process exited with code ${code}, signal ${signal}`
-        );
-      }
-      audioProcess = null;
-      audioStream.push(null); // End the stream
-    });
-
-    audioProcess.on("error", (error) => {
-      if (config.debug) {
-        console.error("arecord process error:", error);
-      }
-      audioStream.emit("error", error);
-    });
-
-    if (audioProcess.stdout) {
-      audioProcess.stdout.on("data", (chunk: Buffer) => {
-        audioStream.push(chunk);
-      });
-
-      audioProcess.stdout.on("error", (error) => {
-        if (config.debug) {
-          console.error("arecord stdout error:", error);
-        }
-        audioStream.emit("error", error);
-      });
-    }
-
-    if (config.debug && audioProcess.stderr) {
-      audioProcess.stderr.on("data", (data: Buffer) => {
-        console.log("arecord stderr:", data.toString());
-      });
-    }
+    logger.debug("Stopping audio recording");
+    arecord.kill("SIGTERM");
+    arecord = null;
   };
 
-  const stopRecording = (): void => {
-    if (audioProcess === null) {
-      if (config.debug) {
-        console.warn("No recording process to stop");
-      }
-      return;
-    }
-
-    if (config.debug) {
-      console.log("Stopping audio recording");
-    }
-
-    audioProcess.kill("SIGTERM");
-    audioProcess = null;
-  };
-
-  const getAudioStream = (): Readable => {
-    return audioStream;
+  const getStream = (): Readable => {
+    return stream;
   };
 
   return {
-    startRecording,
-    stopRecording,
-    getAudioStream,
+    start,
+    stop,
+    getStream,
   };
 }
+
+export type AudioRecorderFactory = typeof createAudioRecorder;

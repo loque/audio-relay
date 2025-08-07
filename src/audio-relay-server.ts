@@ -1,40 +1,22 @@
 import WebSocket from "ws";
-import { createAudioRecorder, type AudioRecorder } from "./audio-recorder";
-import { createAudioPlayer } from "./audio-player";
-import { type Writable } from "stream";
+import type { AudioRecorderFactory } from "./audio-recorder";
+import { AudioPlayer } from "./audio-player";
+import type { Readable } from "stream";
+import { getLogger } from "./logger";
 
 export interface AudioRelayServerConfig {
-  format: {
-    channels: number;
-    sampleRate: number;
-    bitDepth: 16 | 24 | 32;
-  };
-  debug?: boolean;
-  createAudioRecorder?: typeof createAudioRecorder;
-  createAudioPlayer?: typeof createAudioPlayer;
+  logger?: typeof console;
+  createAudioRecorder: AudioRecorderFactory;
 }
 
 export class AudioRelayServer {
-  private playerStream: Writable;
-  private audioRecorder: AudioRecorder | undefined;
-  private recorderClients = new Set<WebSocket>();
-  private config: AudioRelayServerConfig;
+  protected logger: typeof console;
+  protected createAudioRecorder: AudioRecorderFactory;
 
-  constructor(config: AudioRelayServerConfig) {
-    this.config = config;
-
-    const createPlayerFn = config.createAudioPlayer ?? createAudioPlayer;
-
-    const audioPlayer = createPlayerFn({
-      rate: config.format.sampleRate,
-      channels: config.format.channels,
-      bitwidth: config.format.bitDepth,
-      encoding: "signed-integer",
-      endian: "little",
-      debug: config.debug ?? false,
-    });
-
-    this.playerStream = audioPlayer.getAudioStream();
+  constructor({ logger, createAudioRecorder }: AudioRelayServerConfig) {
+    this.logger = logger || getLogger();
+    this.createAudioRecorder = createAudioRecorder;
+    this.logger.log("[audio-relay] Server initialized");
   }
 
   handleConnection(ws: WebSocket, path: string): void {
@@ -47,94 +29,85 @@ export class AudioRelayServer {
     }
   }
 
-  private handlePlayConnection(ws: WebSocket): void {
+  protected handlePlayConnection(ws: WebSocket): void {
+    let state: "pending" | "active" | "closed" = "pending";
+    let player: AudioPlayer | undefined;
+
     ws.on("message", (data, isBinary) => {
-      if (!isBinary) return; // ignore text frames
-      this.playerStream.write(data as Buffer);
+      if (state === "pending") {
+        if (isBinary) {
+          this.logger.warn("[audio-relay] /play: expected JSON config");
+          return;
+        }
+        try {
+          const msg = JSON.parse(data.toString()) || {};
+          player = new AudioPlayer(msg);
+
+          player.on("close", () => {
+            this.logger.log("[audio-relay] /play: stream closed");
+            state = "closed";
+            ws.close(1000, "playback ended, stream closed");
+          });
+
+          this.logger.log(
+            `[audio-relay] /play: new stream (${msg.sampleRate}Hz, ${msg.channels}ch)`
+          );
+        } catch (err) {
+          this.logger.error(
+            "[audio-relay] /play: error creating audio player",
+            err
+          );
+          ws.close(1007, "error creating audio player");
+        }
+        state = "active";
+      } else if (state === "active") {
+        if (!isBinary) {
+          this.logger.warn("[audio-relay] /play: expected binary audio data");
+          return;
+        }
+        player!.write(data as Buffer);
+      }
     });
-
-    if (this.config.debug) {
-      console.log("[audio-relay] /play client connected");
-    }
-  }
-
-  private handleRecConnection(ws: WebSocket): void {
-    this.recorderClients.add(ws);
-    this.startRecorder();
-
-    if (this.config.debug) {
-      console.log(`[audio-relay] /rec listeners: ${this.recorderClients.size}`);
-    }
 
     ws.on("close", () => {
-      this.recorderClients.delete(ws);
-      if (this.config.debug) {
-        console.log(
-          `[audio-relay] /rec listeners: ${this.recorderClients.size}`
-        );
-      }
-      this.stopRecorder();
+      player?.close();
+      state = "closed";
+      this.logger.log("[audio-relay] /play client disconnected");
     });
   }
 
-  private startRecorder(): void {
-    if (this.audioRecorder) return; // already running
+  protected handleRecConnection(ws: WebSocket): void {
+    let state: "pending" | "active" | "closing" | "closed" = "pending";
+    let stream: Readable | undefined;
 
-    const createRecorderFn =
-      this.config.createAudioRecorder ?? createAudioRecorder;
-
-    this.audioRecorder = createRecorderFn({
-      rate: this.config.format.sampleRate,
-      channels: this.config.format.channels,
-      bitwidth: this.config.format.bitDepth,
-      encoding: "signed-integer",
-      endian: "little",
-      debug: this.config.debug ?? false,
-    });
-
-    const audioStream = this.audioRecorder.getAudioStream();
-    audioStream.on("data", (chunk: Buffer) => {
-      for (const ws of this.recorderClients) {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(chunk);
-        }
+    ws.on("message", (data, isBinary) => {
+      if (state === "pending") {
+        const msg = JSON.parse(data.toString()) || {};
+        const audioRecorder = this.createAudioRecorder(msg);
+        stream = audioRecorder.getStream();
+        stream.on("data", (chunk: Buffer) => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(chunk);
+          }
+        });
+        stream.on("error", (error) => {
+          this.logger.error("[audio-relay] Recorder stream error:", error);
+        });
+        state = "active";
+      } else if (state === "active") {
+        if (isBinary) return;
+        // Assume close message
+        state = "closing";
+        ws.close(1001, "closed by client");
+      } else if (state === "closing") {
+        ws.close(1008, "stream already stopped");
       }
     });
 
-    audioStream.on("error", (error) => {
-      if (this.config.debug) {
-        console.error("[audio-relay] Recorder stream error:", error);
-      }
+    ws.on("close", () => {
+      stream = undefined;
+      state = "closed";
+      this.logger.log("[audio-relay] Recorder stopped");
     });
-
-    this.audioRecorder.startRecording();
-
-    if (this.config.debug) {
-      console.log("[audio-relay] Recorder started");
-    }
-  }
-
-  private stopRecorder(): void {
-    if (this.audioRecorder && this.recorderClients.size === 0) {
-      this.audioRecorder.stopRecording();
-      this.audioRecorder = undefined;
-
-      if (this.config.debug) {
-        console.log("[audio-relay] Recorder stopped (no listeners)");
-      }
-    }
-  }
-
-  // Getter methods for testing
-  getRecorderClientsCount(): number {
-    return this.recorderClients.size;
-  }
-
-  isRecorderRunning(): boolean {
-    return this.audioRecorder !== undefined;
-  }
-
-  getPlayerStream(): Writable {
-    return this.playerStream;
   }
 }

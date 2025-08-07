@@ -1,11 +1,10 @@
 #!/usr/bin/env bun
 import WebSocket from "ws";
-import { readFileSync } from "fs";
-import { Reader } from "wav";
-import { resolve } from "path";
+import * as fs from "fs";
+import * as path from "path";
 
 const SERVER_URL = "ws://localhost:3000";
-const WAV_FILE_PATH = resolve(import.meta.dir, "003.wav");
+const WAV_FILE_PATH = path.resolve(import.meta.dir, "chime-16khz.wav");
 
 console.log("🎵 Audio Relay Play File");
 console.log("This example will:");
@@ -14,159 +13,82 @@ console.log("2. Connect to /play endpoint");
 console.log("3. Stream the audio data to the server for playback");
 console.log("");
 
-async function playWavFile(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    console.log("Reading WAV file...");
+async function playWavFile(filePath: string): Promise<void> {
+  console.log("Reading WAV file...");
+  const wavBuffer = fs.readFileSync(filePath);
+  const { bitDepth, channels, sampleRate } = parseWavHeader(wavBuffer);
+  const { dataOffset, dataSize } = findDataChunk(wavBuffer);
+  const wavData = wavBuffer.subarray(dataOffset, dataOffset + dataSize);
 
-    let wavData: Buffer;
-    let wavFormat: any;
+  console.log(`WAV file loaded: ${wavData.length} bytes of audio data`);
+  console.log(
+    `Format: ${channels} channel(s), ${sampleRate} Hz, ${bitDepth}-bit`
+  );
 
-    try {
-      // Read the WAV file
-      const fileBuffer = readFileSync(WAV_FILE_PATH);
-      const reader = new Reader();
+  console.log("Connecting to /play endpoint...");
+  const ws = new WebSocket(`${SERVER_URL}/play`);
 
-      // Parse WAV header
-      reader.on("format", (format) => {
-        wavFormat = format;
-        console.log("WAV Format:", {
-          channels: format.channels,
-          sampleRate: format.sampleRate,
-          bitDepth: format.bitDepth,
-          encoding: format.audioFormat === 1 ? "PCM" : "Other",
-        });
-      });
+  ws.on("open", async () => {
+    console.log("Connected to /play ➜ starting playback");
 
-      reader.on("data", (chunk: Buffer) => {
-        if (!wavData) {
-          wavData = chunk;
-        } else {
-          wavData = Buffer.concat([wavData, chunk]);
-        }
-      });
+    // Calculate chunk size for smooth streaming
+    // Send data in chunks that represent about 100ms of audio
+    const bytesPerSample = (bitDepth / 8) * channels;
+    const samplesPerChunk = Math.floor(sampleRate * 0.1); // 100ms worth
+    const chunkSize = samplesPerChunk * bytesPerSample;
 
-      reader.on("end", () => {
-        console.log(`WAV file loaded: ${wavData.length} bytes of audio data`);
-        startPlayback();
-      });
+    console.log(
+      `Streaming audio in ${chunkSize}-byte chunks (${samplesPerChunk} samples each)`
+    );
 
-      reader.on("error", (error) => {
-        console.error("❌ Error reading WAV file:", error);
-        reject(error);
-      });
+    ws.send(JSON.stringify({ channels, sampleRate, bitDepth }));
 
-      // Parse the WAV file
-      reader.end(fileBuffer);
-    } catch (error) {
-      console.error("❌ Error loading WAV file:", error);
-      reject(error);
-      return;
+    let chunkCount = 0;
+
+    for (let offset = 0; offset < wavData.length; offset += chunkSize) {
+      if (ws.readyState !== WebSocket.OPEN) {
+        throw new Error("Connection lost");
+      }
+
+      // Get next chunk
+      const chunk = wavData.subarray(
+        offset,
+        Math.min(offset + chunkSize, wavData.length)
+      );
+
+      // Send the chunk
+      ws.send(chunk);
+      chunkCount++;
+
+      // Log progress every 10 chunks
+      if (chunkCount % 10 === 0) {
+        const progress = (
+          ((offset + chunk.length) / wavData.length) *
+          100
+        ).toFixed(1);
+        console.log(`  Sent ${chunkCount} chunks (${progress}% complete)`);
+      }
     }
 
-    function startPlayback() {
-      console.log("Connecting to /play endpoint...");
-      const playerWs = new WebSocket(`${SERVER_URL}/play`);
+    console.log(`All ${chunkCount} chunks sent successfully`);
+  });
 
-      playerWs.on("open", () => {
-        console.log("Connected to /play ➜ starting playback");
+  ws.on("error", (error) => {
+    console.error("❌ Playback error:", error);
+    throw error;
+  });
 
-        // Calculate chunk size for smooth streaming
-        // Send data in chunks that represent about 100ms of audio
-        const bytesPerSample = (wavFormat.bitDepth / 8) * wavFormat.channels;
-        const samplesPerChunk = Math.floor(wavFormat.sampleRate * 0.1); // 100ms worth
-        const chunkSize = samplesPerChunk * bytesPerSample;
-
-        console.log(
-          `Streaming audio in ${chunkSize}-byte chunks (${samplesPerChunk} samples each)`
-        );
-
-        let offset = 0;
-        let chunkCount = 0;
-
-        const sendNextChunk = () => {
-          if (offset >= wavData.length) {
-            console.log(`All ${chunkCount} chunks sent successfully`);
-
-            // Calculate expected playback duration
-            const totalSamples = wavData.length / bytesPerSample;
-            const durationMs = (totalSamples / wavFormat.sampleRate) * 1000;
-
-            console.log(
-              `Expected playback duration: ${(durationMs / 1000).toFixed(
-                1
-              )} seconds`
-            );
-            console.log("Waiting for playback to complete...");
-
-            // Wait for playback to finish, then close
-            setTimeout(() => {
-              playerWs.close();
-              resolve();
-            }, durationMs + 500); // Add 500ms buffer
-
-            return;
-          }
-
-          // Get next chunk
-          const chunk = wavData.subarray(
-            offset,
-            Math.min(offset + chunkSize, wavData.length)
-          );
-
-          if (playerWs.readyState === WebSocket.OPEN) {
-            playerWs.send(chunk);
-            chunkCount++;
-            offset += chunk.length;
-
-            // Log progress every 10 chunks
-            if (chunkCount % 10 === 0) {
-              const progress = ((offset / wavData.length) * 100).toFixed(1);
-              console.log(
-                `  Sent ${chunkCount} chunks (${progress}% complete)`
-              );
-            }
-
-            // Schedule next chunk with timing to match audio rate
-            const chunkDurationMs =
-              (samplesPerChunk / wavFormat.sampleRate) * 1000;
-            setTimeout(sendNextChunk, chunkDurationMs);
-          } else {
-            console.error("❌ WebSocket connection lost during playback");
-            reject(new Error("Connection lost"));
-          }
-        };
-
-        // Start sending chunks
-        sendNextChunk();
-      });
-
-      playerWs.on("error", (error) => {
-        console.error("❌ Playback error:", error);
-        reject(error);
-      });
-
-      playerWs.on("close", (code, reason) => {
-        console.log(
-          `Playback connection closed (code: ${code}, reason: ${reason})`
-        );
-      });
-    }
+  ws.on("close", (code, reason) => {
+    console.log(
+      `Playback connection closed (code: ${code}, reason: ${reason})`
+    );
   });
 }
 
 // Main execution
 async function main() {
   try {
-    // Check if WAV file exists
-    try {
-      readFileSync(WAV_FILE_PATH);
-    } catch (error) {
-      console.error(`❌ WAV file not found: ${WAV_FILE_PATH}`);
-      console.error("Make sure the file exists before running this example.");
-      process.exit(1);
-    }
-
-    await playWavFile();
+    await playWavFile(WAV_FILE_PATH);
     console.log("🎉 WAV file playback completed!");
   } catch (error) {
     console.error("❌ Playback failed:", error);
@@ -182,3 +104,70 @@ process.on("SIGINT", () => {
 
 // Start the playback
 main();
+
+function parseWavHeader(buffer: Buffer) {
+  // Check for RIFF header
+  if (buffer.toString("ascii", 0, 4) !== "RIFF") {
+    throw new Error("Invalid WAV file: missing RIFF header");
+  }
+
+  // Check for WAVE format
+  if (buffer.toString("ascii", 8, 12) !== "WAVE") {
+    throw new Error("Invalid WAV file: missing WAVE format");
+  }
+
+  // Find fmt chunk
+  let offset = 12;
+  while (offset < buffer.length - 8) {
+    const chunkId = buffer.toString("ascii", offset, offset + 4);
+    const chunkSize = buffer.readUInt32LE(offset + 4);
+
+    if (chunkId === "fmt ") {
+      // Found format chunk
+      const audioFormat = buffer.readUInt16LE(offset + 8);
+      const channels = buffer.readUInt16LE(offset + 10);
+      const sampleRate = buffer.readUInt32LE(offset + 12);
+      const bitDepth = buffer.readUInt16LE(offset + 22);
+
+      if (audioFormat !== 1) {
+        throw new Error(
+          `Unsupported audio format: ${audioFormat} (only PCM is supported)`
+        );
+      }
+
+      return {
+        channels,
+        sampleRate,
+        bitDepth,
+        formatChunkSize: chunkSize,
+      };
+    }
+
+    offset += 8 + chunkSize;
+  }
+
+  throw new Error("Invalid WAV file: fmt chunk not found");
+}
+
+function findDataChunk(buffer: Buffer) {
+  let offset = 12;
+  while (offset < buffer.length - 8) {
+    const chunkId = buffer.toString("ascii", offset, offset + 4);
+    const chunkSize = buffer.readUInt32LE(offset + 4);
+
+    if (chunkId === "data") {
+      return {
+        dataOffset: offset + 8,
+        dataSize: chunkSize,
+      };
+    }
+
+    offset += 8 + chunkSize;
+  }
+
+  throw new Error("Invalid WAV file: data chunk not found");
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
