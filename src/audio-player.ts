@@ -71,7 +71,7 @@ export class AudioPlayer {
     // - Process crash or unexpected termination
     // - System kills the process (out of memory, etc.)
     this.aplay.on("exit", (code, signal) => {
-      this.logger.log(
+      this.logger.debug(
         `aplay process exited with code ${code}, signal ${signal}`
       );
       if (code !== 0 && this.state === "active") {
