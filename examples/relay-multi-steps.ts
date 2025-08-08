@@ -25,16 +25,17 @@ let totalRecordedBytes = 0;
 // Step 1: Record audio from /rec endpoint
 function startRecording(): Promise<void> {
   return new Promise((resolve, reject) => {
-    console.log("Connecting to /rec endpoint...");
     const ws = new WebSocket(`${SERVER_URL}/rec`);
 
     ws.on("open", () => {
-      console.log("Connected to /rec ➜ recording started");
-      console.log(`Recording for ${DURATION_SEC} seconds...`);
+      console.log(`Starting ${DURATION_SEC} seconds recording...`);
+      console.log(
+        `Recording format: ${REC_FORMAT["channels"]}ch, ${REC_FORMAT["sampleRate"]}Hz, ${REC_FORMAT["bitDepth"]}-bit`
+      );
       ws.send(JSON.stringify(REC_FORMAT));
     });
 
-    ws.on("message", (data: Buffer, isBinary: boolean) => {
+    ws.on("message", (data: Buffer) => {
       recordedChunks.push(data);
       totalRecordedBytes += data.length;
 
@@ -51,17 +52,14 @@ function startRecording(): Promise<void> {
       reject(error);
     });
 
-    ws.on("close", () => {
-      console.log("Recording connection closed");
-      resolve();
-    });
+    ws.on("close", () => resolve());
 
     // Stop recording after specified duration
     setTimeout(() => {
-      console.log(`Stopping recording after ${DURATION_SEC} seconds`);
       console.log(
         `Total recorded: ${recordedChunks.length} chunks, ${totalRecordedBytes} bytes`
       );
+      console.log();
       ws.close();
     }, DURATION);
   });
@@ -79,15 +77,13 @@ async function playWavFile({
   sampleRate: number;
 }): Promise<void> {
   return new Promise((resolve, reject) => {
-    console.log(
-      `File format: ${channels} channel(s), ${sampleRate} Hz, ${bitDepth}-bit, ${wavData.length} bytes total`
-    );
-
-    console.log("Connecting to /play endpoint...");
     const ws = new WebSocket(`${SERVER_URL}/play`);
 
     ws.on("open", async () => {
-      console.log("Connected to /play ➜ starting playback");
+      console.log("Starting playback of WAV file...");
+      console.log(
+        `File format: ${channels}ch, ${sampleRate}Hz, ${bitDepth}-bit, ${wavData.length} bytes total`
+      );
 
       // Calculate chunk size for smooth streaming
       // Send data in chunks that represent about 100ms of audio
@@ -127,8 +123,6 @@ async function playWavFile({
           console.log(`  Sent ${chunkCount} chunks (${progress}% complete)`);
         }
       }
-
-      console.log(`All ${chunkCount} chunks sent successfully`);
     });
 
     ws.on("error", (error) => {
@@ -137,9 +131,14 @@ async function playWavFile({
     });
 
     ws.on("close", (code, reason) => {
-      console.log(
-        `Playback connection closed (code: ${code}, reason: ${reason})`
-      );
+      if (code !== 1000) {
+        console.error(
+          `❌ Playback connection closed unexpectedly (code: ${code}, reason: ${reason})`
+        );
+        reject(new Error(`Playback failed: ${reason}`));
+        return;
+      }
+      console.log(`Playback completed successfully`);
       resolve();
     });
   });
@@ -148,19 +147,19 @@ async function playWavFile({
 // Step 2: Play back the recorded audio through /play endpoint
 function startPlayback(): Promise<void> {
   return new Promise((resolve, reject) => {
-    console.log();
     if (recordedChunks.length === 0) {
       console.log("❌ No audio recorded to play back");
       reject(new Error("No audio data"));
       return;
     }
 
-    console.log("Connecting to /play endpoint...");
     const ws = new WebSocket(`${SERVER_URL}/play`);
 
     ws.on("open", () => {
-      console.log("Connected to /play ➜ starting playback");
-      console.log(`Sending all ${recordedChunks.length} chunks...`);
+      console.log("Starting playback of recorded audio...");
+      console.log(
+        `Recording format: ${REC_FORMAT["channels"]}ch, ${REC_FORMAT["sampleRate"]}Hz, ${REC_FORMAT["bitDepth"]}-bit, ${recordedChunks.length} chunks`
+      );
 
       ws.send(JSON.stringify(REC_FORMAT));
 
@@ -184,9 +183,15 @@ function startPlayback(): Promise<void> {
     });
 
     ws.on("close", (code, reason) => {
-      console.log(
-        `Playback connection closed (code: ${code}, reason: ${reason})`
-      );
+      if (code !== 1000) {
+        console.error(
+          `❌ Playback connection closed unexpectedly (code: ${code}, reason: ${reason})`
+        );
+        reject(new Error(`Playback failed: ${reason}`));
+        return;
+      }
+      console.log(`Playback completed successfully`);
+      resolve();
     });
   });
 }
@@ -196,15 +201,14 @@ async function main() {
   try {
     const chime = readWavFile(WAV_FILE_PATH);
 
-    // Step 1: Record audio
     await startRecording();
 
+    console.log();
     await playWavFile(chime);
 
-    console.log();
     await new Promise((resolve) => setTimeout(resolve, 1000));
 
-    // Step 2: Play back recorded audio
+    console.log();
     await startPlayback();
 
     console.log();
