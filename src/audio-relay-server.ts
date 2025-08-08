@@ -12,7 +12,6 @@ export class AudioRelayServer {
 
   constructor({ logger }: AudioRelayServerConfig = {}) {
     this.logger = logger || getLogger();
-    this.logger.log("[audio-relay] Server initialized");
   }
 
   connect(ws: WebSocket, path: string): void {

@@ -54,7 +54,7 @@ logger.debug("Debug logging enabled");
 const audioRelayServer = new AudioRelayServer();
 
 const wss = new WebSocketServer({ port: PORT }, () =>
-  logger.log(`[audio-relay] listening on ws://0.0.0.0:${PORT}`)
+  logger.log(`[audio-relay] Server listening on ws://0.0.0.0:${PORT}`)
 );
 
 wss.on("connection", (ws, req) => {
