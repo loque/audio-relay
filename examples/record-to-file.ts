@@ -1,18 +1,17 @@
 #!/usr/bin/env bun
-import { createAudioRecorder } from "../src/audio-recorder.js";
 import * as wav from "wav";
 import * as fs from "fs";
 import { resolve } from "path";
+import { AudioRecorder } from "../src/audio-recorder";
 
-const recorder = createAudioRecorder({
-  rate: 16000,
-  channels: 1,
-  bitDepth: 16,
-  endian: "little",
-  encoding: "signed-integer",
-  device: "default",
-  debug: true,
-});
+const recorder = new AudioRecorder(
+  {
+    sampleRate: 16_000,
+    channels: 1,
+    bitDepth: 16,
+  },
+  { logger: console }
+);
 
 const outputDir = resolve(__dirname, "out");
 if (!fs.existsSync(outputDir)) {
@@ -29,25 +28,16 @@ const fileWriter = new wav.FileWriter(outputFile, {
 
 console.log(`Will save audio to: ${outputFile}`);
 
-// Get the audio stream
-const audioStream = recorder.getAudioStream();
-
 // Pipe audio data to WAV file
-audioStream.pipe(fileWriter);
+recorder.pipe(fileWriter);
 
 // Handle audio data (for logging)
-audioStream.on("data", (chunk: Buffer) => {
+recorder.on("data", (chunk: Buffer) => {
   console.log(`Received ${chunk.length} bytes of audio data`);
 });
 
-// Handle stream end
-audioStream.on("end", () => {
-  console.log("Audio stream ended");
-  console.log(`Audio saved to: ${outputFile}`);
-});
-
 // Handle errors
-audioStream.on("error", (error) => {
+recorder.on("error", (error) => {
   console.error("Audio stream error:", error);
 });
 
@@ -56,12 +46,8 @@ fileWriter.on("error", (error) => {
   console.error("WAV file writer error:", error);
 });
 
-// Start recording
-console.log("Starting audio recording...");
-recorder.startRecording();
-
 // Stop after 5 seconds
 setTimeout(() => {
   console.log("Stopping audio recording...");
-  recorder.stopRecording();
+  recorder.stop();
 }, 5000);
