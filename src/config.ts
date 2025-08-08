@@ -1,5 +1,4 @@
 import * as z from "zod/v4";
-import { Logger } from "./logger";
 
 export const audioConfigSchema = z
   .object({
