@@ -1,9 +1,8 @@
-import { WebSocketServer } from "ws";
-import { AudioRelayServer } from "./audio-relay-server";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
+import { WebSocketServer } from "ws";
+import { AudioRelayServer } from "./audio-relay-server";
 import { initializeLogger } from "./logger";
-import { createAudioRecorder } from "./audio-recorder";
 
 const EXE = "audio-relay";
 
@@ -50,10 +49,9 @@ const config = getConfig();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : config.port;
 const DEBUG = process.env.DEBUG === "true" || config.debug;
 const logger = initializeLogger({ level: DEBUG ? "debug" : "info" });
+logger.debug("Debug logging enabled");
 
-const audioRelayServer = new AudioRelayServer({
-  createAudioRecorder,
-});
+const audioRelayServer = new AudioRelayServer();
 
 const wss = new WebSocketServer({ port: PORT }, () =>
   logger.log(`[audio-relay] listening on ws://0.0.0.0:${PORT}`)
