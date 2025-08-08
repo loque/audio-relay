@@ -1,21 +1,17 @@
 import WebSocket from "ws";
-import type { AudioRecorderFactory } from "./audio-recorder";
+import { AudioRecorder } from "./audio-recorder";
 import { AudioPlayer } from "./audio-player";
-import type { Readable } from "stream";
 import { getLogger } from "./logger";
 
 export interface AudioRelayServerConfig {
   logger?: typeof console;
-  createAudioRecorder: AudioRecorderFactory;
 }
 
 export class AudioRelayServer {
   protected logger: typeof console;
-  protected createAudioRecorder: AudioRecorderFactory;
 
-  constructor({ logger, createAudioRecorder }: AudioRelayServerConfig) {
+  constructor({ logger }: AudioRelayServerConfig = {}) {
     this.logger = logger || getLogger();
-    this.createAudioRecorder = createAudioRecorder;
     this.logger.log("[audio-relay] Server initialized");
   }
 
@@ -78,19 +74,19 @@ export class AudioRelayServer {
 
   protected handleRecConnection(ws: WebSocket): void {
     let state: "pending" | "active" | "closing" | "closed" = "pending";
-    let stream: Readable | undefined;
+    let recorder: AudioRecorder | undefined;
 
     ws.on("message", (data, isBinary) => {
       if (state === "pending") {
         const msg = JSON.parse(data.toString()) || {};
-        const audioRecorder = this.createAudioRecorder(msg);
-        stream = audioRecorder.getStream();
-        stream.on("data", (chunk: Buffer) => {
+        recorder = new AudioRecorder(msg);
+        recorder.on("data", (chunk: Buffer) => {
+          console.debug(">>> piping data");
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(chunk);
           }
         });
-        stream.on("error", (error) => {
+        recorder.on("error", (error) => {
           this.logger.error("[audio-relay] Recorder stream error:", error);
         });
         state = "active";
@@ -105,8 +101,8 @@ export class AudioRelayServer {
     });
 
     ws.on("close", () => {
-      stream = undefined;
       state = "closed";
+      recorder?.stop();
       this.logger.log("[audio-relay] Recorder stopped");
     });
   }

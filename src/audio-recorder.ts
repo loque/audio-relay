@@ -1,98 +1,89 @@
-import { spawn, ChildProcess } from "child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import { Readable } from "stream";
 import { validateAudioConfig, type AudioConfigInput } from "./config";
+import { getLogger } from "./logger";
 
-export interface AudioRecorder {
-  start(): void;
-  stop(): void;
-  getStream(): Readable;
-}
+type AudioRecorderOptions = {
+  logger?: typeof console;
+};
 
-export function createAudioRecorder(input: AudioConfigInput): AudioRecorder {
-  const { channels, sampleRate, format, device, logger } =
-    validateAudioConfig(input);
+export class AudioRecorder {
+  protected readonly arecord: ChildProcessWithoutNullStreams;
+  protected readonly stream: Readable;
+  protected readonly logger: typeof console;
+  protected state: "pending" | "active" | "closing" | "closed" = "pending";
 
-  let arecord: ChildProcess | null = null;
-  const stream = new Readable({
-    // No-op: data is pushed from arecord process
-    read() {},
-  });
+  constructor(input: AudioConfigInput, { logger }: AudioRecorderOptions = {}) {
+    this.logger = logger || getLogger();
 
-  const start = (): void => {
-    if (arecord !== null) {
-      logger.warn("Recording already started");
-      return;
-    }
+    const { channels, sampleRate, format, device } = validateAudioConfig(input);
 
-    // arecord command arguments
+    this.stream = new Readable({
+      // No-op: data is pushed from arecord process
+      read() {},
+    });
+
+    // prettier-ignore
     const args = [
-      "-t",
-      "raw",
-      "-c",
-      channels.toString(),
-      "-r",
-      sampleRate.toString(),
-      "-f",
-      format,
-      "-D",
-      device,
+      "-t", "raw",
+      "-c", channels.toString(),
+      "-r", sampleRate.toString(),
+      "-f", format,
+      "-D", device,
     ];
 
-    logger.log("Starting arecord with args:", args);
-
-    arecord = spawn("arecord", args, {
-      stdio: ["ignore", "pipe", "pipe"],
+    this.logger.log("Starting arecord with args:", args);
+    this.arecord = spawn("arecord", args, {
+      stdio: ["pipe", "pipe", "pipe"],
     });
 
-    arecord.on("exit", (code, signal) => {
-      logger.debug(
+    this.arecord.on("exit", (code, signal) => {
+      this.logger.debug(
         `arecord process exited with code ${code}, signal ${signal}`
       );
-      arecord = null;
-      stream.push(null); // End the stream
+      // this.arecord = null; //TODO: handle cleanup
+      this.stream.push(null); // End the stream
     });
 
-    arecord.on("error", (error) => {
-      logger.debug("arecord process error:", error);
-      stream.emit("error", error);
+    this.arecord.on("error", (error) => {
+      this.logger.debug("arecord process error:", error);
+      this.stream.emit("error", error);
     });
 
-    if (arecord.stdout) {
-      arecord.stdout.on("data", (chunk: Buffer) => {
-        stream.push(chunk);
-      });
-
-      arecord.stdout.on("error", (error) => {
-        logger.debug("arecord stdout error:", error);
-        stream.emit("error", error);
-      });
-    }
-
-    arecord.stderr?.on("data", (data: Buffer) => {
-      logger.debug("arecord stderr:", data.toString());
+    this.arecord.stdout.on("data", (chunk: Buffer) => {
+      this.stream.push(chunk);
     });
-  };
 
-  const stop = (): void => {
-    if (arecord === null) {
-      logger.debug("No recording process to stop");
+    this.arecord.stdout.on("error", (error) => {
+      this.logger.debug("arecord stdout error:", error);
+      this.stream.emit("error", error);
+    });
+
+    this.arecord.stderr?.on("data", (data: Buffer) => {
+      this.logger.debug("arecord stderr:", data.toString());
+    });
+
+    this.state = "active";
+  }
+
+  public on(event: "data" | "error", listener: (...args: any[]) => void) {
+    this.stream.on(event, listener);
+    return this;
+  }
+
+  public pipe(dest: NodeJS.WritableStream, options?: { end?: boolean }) {
+    return this.stream.pipe(dest, options);
+  }
+
+  public stop(): void {
+    if (this.state === "closed") {
+      this.logger.warn("Recording already stopped");
       return;
     }
 
-    logger.debug("Stopping audio recording");
-    arecord.kill("SIGTERM");
-    arecord = null;
-  };
-
-  const getStream = (): Readable => {
-    return stream;
-  };
-
-  return {
-    start,
-    stop,
-    getStream,
-  };
+    this.logger.debug("Stopping audio recording");
+    this.arecord.kill("SIGTERM");
+    this.state = "closed";
+    this.stream.push(null); // End the stream
+  }
 }
-
-export type AudioRecorderFactory = typeof createAudioRecorder;
