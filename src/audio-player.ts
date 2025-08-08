@@ -29,7 +29,7 @@ type AudioPlayerOptions = {
   logger?: typeof console;
 };
 
-export class AudioPlayer extends EventEmitter {
+export class AudioPlayer {
   protected readonly aplay: ChildProcessWithoutNullStreams;
   protected readonly stream: Writable;
   protected queuedMs = 0; // how many ms of audio we have queued so far
@@ -37,9 +37,9 @@ export class AudioPlayer extends EventEmitter {
   protected readonly interval: NodeJS.Timeout;
   protected readonly logger: typeof console;
   protected state: "pending" | "active" | "closing" | "closed" = "pending";
+  protected readonly emitter = new EventEmitter();
 
   constructor(input: AudioConfigInput, { logger }: AudioPlayerOptions = {}) {
-    super();
     this.logger = logger || getLogger();
     const { channels, sampleRate, bitDepth, format, device } =
       validateAudioConfig(input);
@@ -61,7 +61,7 @@ export class AudioPlayer extends EventEmitter {
     this.aplay.on("error", (error) => {
       this.logger.error("aplay process error:", error);
       this.state = "closed";
-      this.emit("error", error);
+      this.emitter.emit("error", error);
     });
 
     // Handle process exit (normal termination, crashes, or kills)
@@ -75,7 +75,7 @@ export class AudioPlayer extends EventEmitter {
         `aplay process exited with code ${code}, signal ${signal}`
       );
       if (code !== 0 && this.state === "active") {
-        this.emit("error", new Error(`aplay exited with code ${code}`));
+        this.emitter.emit("error", new Error(`aplay exited with code ${code}`));
       }
     });
 
@@ -91,7 +91,7 @@ export class AudioPlayer extends EventEmitter {
     // Examples: trying to write after stdin is closed, network issues, etc.
     this.aplay.stdin.on("error", async (error) => {
       this.logger.error("aplay stdin error:", error);
-      this.emit("error", error);
+      this.emitter.emit("error", error);
       await this.cleanup();
     });
 
@@ -122,6 +122,11 @@ export class AudioPlayer extends EventEmitter {
     this.interval = setInterval(() => this.pollDrained(), 200);
 
     this.state = "active";
+  }
+
+  public on(event: "close" | "error", listener: (...args: any[]) => void) {
+    this.emitter.on(event, listener);
+    return this;
   }
 
   public write(chunk: Buffer): boolean {
@@ -186,6 +191,6 @@ export class AudioPlayer extends EventEmitter {
     }, 100);
 
     this.state = "closed";
-    this.emit("close");
+    this.emitter.emit("close");
   }
 }
